@@ -1,220 +1,170 @@
 import requests
 import smtplib
+import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import time
-from datetime import datetime
-import json
+from datetime import datetime, timedelta
 
 class PlaytomicMonitor:
     def __init__(self, config):
-        """
-        Initialize the Playtomic monitor
-        
-        config should contain:
-        - email_from: sender email
-        - email_password: sender email password (app-specific password recommended)
-        - email_to: recipient email
-        - smtp_server: SMTP server (e.g., 'smtp.gmail.com')
-        - smtp_port: SMTP port (e.g., 587)
-        - location: your location/city
-        - check_interval: seconds between checks (default: 300 = 5 minutes)
-        """
         self.config = config
         self.known_available = set()
-        self.base_url = "https://playtomic.io/api/v1"
         
     def get_available_courts(self):
-        """
-        Check Playtomic API for available courts using the actual API endpoint
-        """
         try:
-            from datetime import datetime, timedelta
+            url = "https://playtomic.com/api/clubs/availability"
             
             headers = {
-                'User-Agent': 'Mozilla/5.0',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                 'Accept': 'application/json'
             }
             
-            # Get today's date in the format Playtomic expects (YYYY-MM-DD)
-            date_today = datetime.now().strftime('%Y-%m-%d')
+            # Check today and the next 4 days
+            dates_to_check = [
+                (datetime.now() + timedelta(days=i)).strftime('%Y-%m-%d')
+                for i in range(5)
+            ]
             
-            # List of tenant IDs for clubs in Mannheim (you'll need to add more)
-            # Find these by clicking on different clubs and checking the network tab
-            tenant_ids = self.config.get('tenant_ids', [
-                '5bb4ad71-dbd9-499e-88fb-c9a5e7df6db6',  # Example club
-                # Add more tenant IDs for Mannheim clubs here
-            ])
+            all_results = []
             
-            all_available = []
+            for tenant_id in self.config['tenant_ids']:
+                for date_str in dates_to_check:
+                    print(f"Checking {date_str}...", end=" ")
+                    
+                    params = {
+                        'tenant_id': tenant_id,
+                        'sport_id': 'PADEL', 
+                        'date': date_str
+                    }
+                    
+                    try:
+                        response = requests.get(url, headers=headers, params=params, timeout=10)
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            if isinstance(data, list) and len(data) > 0:
+                                print("Data found.")
+                                all_results.append({'date': date_str, 'data': data})
+                            else:
+                                print("No slots.")
+                        else:
+                            print(f"Status {response.status_code}")
+                            
+                    except Exception as e:
+                        print(f"Error: {e}")
+                    
+                    time.sleep(1)
             
-            for tenant_id in tenant_ids:
-                params = {
-                    'tenant_id': tenant_id,
-                    'sport_id': 'PADEL',
-                    'date': date_today
-                }
-                
-                response = requests.get(
-                    "https://playtomic.com/api/clubs/availability",
-                    headers=headers,
-                    params=params,
-                    timeout=10
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    # Store the availability data with tenant_id
-                    if data:
-                        all_available.append({
-                            'tenant_id': tenant_id,
-                            'data': data
-                        })
-                else:
-                    print(f"Error for tenant {tenant_id}: Status code {response.status_code}")
+            return all_results
             
-            return all_available
-                
         except Exception as e:
-            print(f"Error fetching courts: {e}")
+            print(f"Global Error: {e}")
             return None
-    
+
+    def check_and_notify(self):
+        print(f"\n--- Cycle Start: {datetime.now().strftime('%H:%M:%S')} ---")
+        availability_data = self.get_available_courts()
+        
+        if not availability_data:
+            print("Status: No open courts found this cycle.")
+            return
+
+        found_slots = []
+        current_cycle_ids = set()
+
+        for day in availability_data:
+            date_str = day['date']
+            
+            for resource in day['data']:
+                court_id = resource.get('resource_id', 'Unknown')
+                
+                for slot in resource.get('slots', []):
+                    start_time = slot.get('start_time')
+                    price = slot.get('price')
+                    duration = slot.get('duration')
+                    
+                    slot_id = f"{date_str}_{court_id}_{start_time}"
+                    current_cycle_ids.add(slot_id)
+                    
+                    found_slots.append({
+                        'date': date_str,
+                        'time': start_time[:5],
+                        'price': price,
+                        'duration': duration
+                    })
+
+        new_openings = current_cycle_ids - self.known_available
+        
+        if found_slots:
+            print(f"Total slots visible: {len(found_slots)}")
+            
+            if new_openings:
+                print(f"FOUND {len(new_openings)} NEW SLOTS! Sending email...")
+                
+                display_list = found_slots[:20]
+                
+                html_rows = ""
+                for s in display_list:
+                    html_rows += f"<li><b>{s['date']}</b> {s['time']} ({s['duration']} min) - {s['price']}</li>"
+                
+                email_body = f"""
+                <h2>Courts Available!</h2>
+                <p>Found {len(found_slots)} slots. Here are the first few:</p>
+                <ul>{html_rows}</ul>
+                <p><a href="https://playtomic.io">Book Now</a></p>
+                """
+                
+                self.send_email("Padel Availability Alert!", email_body)
+            else:
+                print("Slots exist, but you were already notified.")
+        else:
+            print("No courts available.")
+
+        self.known_available = current_cycle_ids
+
     def send_email(self, subject, body):
-        """Send email notification"""
         try:
             msg = MIMEMultipart()
             msg['From'] = self.config['email_from']
             msg['To'] = self.config['email_to']
             msg['Subject'] = subject
-            
             msg.attach(MIMEText(body, 'html'))
             
-            server = smtplib.SMTP(
-                self.config['smtp_server'], 
-                self.config['smtp_port']
-            )
-            server.starttls()
-            server.login(
-                self.config['email_from'], 
-                self.config['email_password']
-            )
-            
+            server = smtplib.SMTP_SSL(self.config['smtp_server'], 465, timeout=30)
+            server.login(self.config['email_from'], self.config['email_password'])
             server.send_message(msg)
             server.quit()
             
-            print(f"Email sent: {subject}")
+            print(f"Email sent successfully!")
             return True
-            
         except Exception as e:
-            print(f"Error sending email: {e}")
+            print(f"Email Failed: {e}")
             return False
-    
-    def format_notification(self, available_courts):
-        """Format the email notification"""
-        html = "<h2>🎾 Paddle Courts Available!</h2>"
-        html += f"<p>Found {len(available_courts)} available court(s) at {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>"
-        html += "<ul>"
-        
-        for court in available_courts:
-            # Adjust these fields based on actual API response
-            venue = court.get('venue_name', 'Unknown Venue')
-            time_slot = court.get('time', 'Unknown Time')
-            price = court.get('price', 'N/A')
-            
-            html += f"<li><strong>{venue}</strong> - {time_slot} - €{price}</li>"
-        
-        html += "</ul>"
-        html += "<p>Book now at <a href='https://playtomic.io'>Playtomic</a></p>"
-        
-        return html
-    
-    def check_and_notify(self):
-        """Main monitoring logic"""
-        print(f"Checking for available courts at {datetime.now()}")
-        
-        data = self.get_available_courts()
-        
-        if data is None:
-            return
-        
-        # Parse available courts from the API response
-        available_courts = []
-        
-        for club_data in data:
-            tenant_id = club_data['tenant_id']
-            availability = club_data['data']
-            
-            # Playtomic API usually returns slots or resources
-            # Parse the structure - this may need adjustment based on actual response
-            if isinstance(availability, list):
-                for slot in availability:
-                    if slot.get('available'):
-                        available_courts.append({
-                            'tenant_id': tenant_id,
-                            'court_id': slot.get('resource_id') or slot.get('id'),
-                            'time': slot.get('start_time') or slot.get('time'),
-                            'price': slot.get('price'),
-                            'venue_name': slot.get('venue_name') or 'Unknown Club'
-                        })
-        
-        # Create unique identifiers for courts
-        current_available = set()
-        for court in available_courts:
-            court_id = f"{court['tenant_id']}_{court['court_id']}_{court['time']}"
-            current_available.add(court_id)
-        
-        # Find newly available courts
-        new_courts = current_available - self.known_available
-        
-        if new_courts:
-            print(f"Found {len(new_courts)} new available court(s)!")
-            # Filter to just the new courts
-            new_court_details = [c for c in available_courts 
-                                 if f"{c['tenant_id']}_{c['court_id']}_{c['time']}" in new_courts]
-            
-            notification = self.format_notification(new_court_details)
-            self.send_email("🎾 New Padel Courts Available in Mannheim!", notification)
-        else:
-            print("No new courts available")
-        
-        # Update known available courts
-        self.known_available = current_available
-    
+
     def run(self):
-        """Start the monitoring loop"""
-        check_interval = self.config.get('check_interval', 300)
-        
-        print(f"Starting Playtomic monitor...")
-        print(f"Checking every {check_interval} seconds")
-        print(f"Location: {self.config.get('location')}")
-        print(f"Notifications to: {self.config['email_to']}")
-        print("-" * 50)
+        print(f"Starting Monitor...")
+        # Send a test email on startup to verify connection immediately
+        print("Sending startup test email...")
+        self.send_email("Monitor Started", "The Padel Monitor is online.")
         
         while True:
             try:
                 self.check_and_notify()
-                time.sleep(check_interval)
+                time.sleep(self.config['check_interval'])
             except KeyboardInterrupt:
-                print("\nMonitor stopped by user")
                 break
             except Exception as e:
-                print(f"Error in monitoring loop: {e}")
-                time.sleep(60)  # Wait a minute before retrying
+                print(f"Loop Error: {e}")
+                time.sleep(60)
 
-# Example usage
 if __name__ == "__main__":
-    # Configuration
     config = {
         'email_from': 'hansallasse@gmail.com',
-        'email_password': 'isus hgbc dias ldcn',
+        'email_password': 'isushgbcdiasldcn',
         'email_to': 'matteo@kalmund.com',
         'smtp_server': 'smtp.gmail.com',
-        'smtp_port': 587,
-        'location': 'Mannheim',
-        'check_interval': 300,  # Check every 5 minutes
-        'tenant_ids': [
-            '5bb4ad71-dbd9-499e-88fb-c9a5e7df6db6',
-        ]
+        'tenant_ids': ['5bb4ad71-dbd9-499e-88fb-c9a5e7df6db6'], 
+        'check_interval': 300 
     }
     
     monitor = PlaytomicMonitor(config)
