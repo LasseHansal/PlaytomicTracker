@@ -66,7 +66,7 @@ class PlaytomicMonitor:
         availability_data = self.get_available_courts()
         
         if not availability_data:
-            print("Status: No open courts found this cycle.")
+            print("Status: No data received.")
             return
 
         found_slots = []
@@ -78,11 +78,22 @@ class PlaytomicMonitor:
             for resource in day['data']:
                 court_id = resource.get('resource_id', 'Unknown')
                 
+                # FILTER 1: Skip Outdoor Courts
+                if court_id in self.config['ignored_courts']:
+                    continue
+
                 for slot in resource.get('slots', []):
-                    start_time = slot.get('start_time')
+                    start_time = slot.get('start_time') # Format "17:30:00"
                     price = slot.get('price')
                     duration = slot.get('duration')
                     
+                    # FILTER 2: Time Check (After 17:00)
+                    # We take the first 2 characters of time ("17") and convert to int
+                    hour = int(start_time.split(':')[0])
+                    if hour < self.config['min_hour']:
+                        continue 
+
+                    # If we survived the filters, add to list
                     slot_id = f"{date_str}_{court_id}_{start_time}"
                     current_cycle_ids.add(slot_id)
                     
@@ -93,14 +104,18 @@ class PlaytomicMonitor:
                         'duration': duration
                     })
 
+        # Identify NEW openings only
+        # This prevents spam. If we already saw this slot 5 mins ago, we ignore it.
         new_openings = current_cycle_ids - self.known_available
         
         if found_slots:
-            print(f"Total slots visible: {len(found_slots)}")
+            print(f"Valid Indoor Slots (>17:00): {len(found_slots)}")
             
             if new_openings:
                 print(f"FOUND {len(new_openings)} NEW SLOTS! Sending email...")
                 
+                # Sort by date and time
+                found_slots.sort(key=lambda x: (x['date'], x['time']))
                 display_list = found_slots[:20]
                 
                 html_rows = ""
@@ -108,18 +123,19 @@ class PlaytomicMonitor:
                     html_rows += f"<li><b>{s['date']}</b> {s['time']} ({s['duration']} min) - {s['price']}</li>"
                 
                 email_body = f"""
-                <h2>Courts Available!</h2>
-                <p>Found {len(found_slots)} slots. Here are the first few:</p>
+                <h2>Indoor Courts Available!</h2>
+                <p>Found {len(found_slots)} slots after {self.config['min_hour']}:00.</p>
                 <ul>{html_rows}</ul>
                 <p><a href="https://playtomic.io">Book Now</a></p>
                 """
                 
-                self.send_email("Padel Availability Alert!", email_body)
+                self.send_email(f"Padel Alert: {len(new_openings)} New Slots!", email_body)
             else:
-                print("Slots exist, but you were already notified.")
+                print("Slots exist, but you were already notified. Staying quiet.")
         else:
-            print("No courts available.")
+            print("No matching courts (Indoor & >17:00) available.")
 
+        # Update memory so we remember these for next time
         self.known_available = current_cycle_ids
 
     def send_email(self, subject, body):
@@ -130,6 +146,7 @@ class PlaytomicMonitor:
             msg['Subject'] = subject
             msg.attach(MIMEText(body, 'html'))
             
+            # Using SMTP_SSL (Port 465) for better firewall compatibility
             server = smtplib.SMTP_SSL(self.config['smtp_server'], 465, timeout=30)
             server.login(self.config['email_from'], self.config['email_password'])
             server.send_message(msg)
@@ -143,9 +160,11 @@ class PlaytomicMonitor:
 
     def run(self):
         print(f"Starting Monitor...")
-        # Send a test email on startup to verify connection immediately
+        print(f"Filtering: Indoor courts only, after {self.config['min_hour']}:00")
+        
+        # Test email
         print("Sending startup test email...")
-        self.send_email("Monitor Started", "The Padel Monitor is online.")
+        self.send_email("Padel Bot Started", "The Monitor is online and filtering for evening indoor courts.")
         
         while True:
             try:
@@ -164,7 +183,15 @@ if __name__ == "__main__":
         'email_to': 'matteo@kalmund.com',
         'smtp_server': 'smtp.gmail.com',
         'tenant_ids': ['5bb4ad71-dbd9-499e-88fb-c9a5e7df6db6'], 
-        'check_interval': 300 
+        'check_interval': 300, # 5 Minutes
+        
+        # --- NEW SETTINGS ---
+        'min_hour': 17, # Only show courts at 17:00 or later
+        'ignored_courts': [
+            '75318066-28dd-40a1-8936-acb5cb61f652', # Outdoor 1
+            'c1110cfb-350d-48e6-8669-57e432fe27c9', # Outdoor 2
+            'da5e34ea-c4e3-489d-8e99-a19de7933f10'  # Outdoor 3
+        ]
     }
     
     monitor = PlaytomicMonitor(config)
