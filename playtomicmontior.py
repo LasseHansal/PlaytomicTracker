@@ -26,39 +26,54 @@ class PlaytomicMonitor:
         
     def get_available_courts(self):
         """
-        Check Playtomic API for available courts
-        Note: You'll need to inspect Playtomic's actual API endpoints
-        This is a template - adjust based on actual API structure
+        Check Playtomic API for available courts using the actual API endpoint
         """
         try:
-            # Example endpoint - you'll need to find the actual one
-            # You may need to use browser dev tools to find the real API calls
+            from datetime import datetime, timedelta
+            
             headers = {
                 'User-Agent': 'Mozilla/5.0',
                 'Accept': 'application/json'
             }
             
-            # This is a placeholder - replace with actual API endpoint
-            # You'll likely need tenant_id, sport_id, and location parameters
-            params = {
-                'tenant_id': 'YOUR_TENANT_ID',  # Find this from browser network tab
-                'sport_id': 'PADEL',  # or whatever sport ID they use
-                'location': self.config.get('location')
-            }
+            # Get today's date in the format Playtomic expects (YYYY-MM-DD)
+            date_today = datetime.now().strftime('%Y-%m-%d')
             
-            # Placeholder endpoint - inspect the actual Playtomic website
-            response = requests.get(
-                f"{self.base_url}/venues",
-                headers=headers,
-                params=params,
-                timeout=10
-            )
+            # List of tenant IDs for clubs in Mannheim (you'll need to add more)
+            # Find these by clicking on different clubs and checking the network tab
+            tenant_ids = self.config.get('tenant_ids', [
+                '5bb4ad71-dbd9-499e-88fb-c9a5e7df6db6',  # Example club
+                # Add more tenant IDs for Mannheim clubs here
+            ])
             
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"Error: Status code {response.status_code}")
-                return None
+            all_available = []
+            
+            for tenant_id in tenant_ids:
+                params = {
+                    'tenant_id': tenant_id,
+                    'sport_id': 'PADEL',
+                    'date': date_today
+                }
+                
+                response = requests.get(
+                    "https://playtomic.com/api/clubs/availability",
+                    headers=headers,
+                    params=params,
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    # Store the availability data with tenant_id
+                    if data:
+                        all_available.append({
+                            'tenant_id': tenant_id,
+                            'data': data
+                        })
+                else:
+                    print(f"Error for tenant {tenant_id}: Status code {response.status_code}")
+            
+            return all_available
                 
         except Exception as e:
             print(f"Error fetching courts: {e}")
@@ -122,17 +137,30 @@ class PlaytomicMonitor:
         if data is None:
             return
         
-        # Parse available courts - adjust based on actual API structure
+        # Parse available courts from the API response
         available_courts = []
-        # This is placeholder logic - modify based on actual response
-        if isinstance(data, dict) and 'courts' in data:
-            available_courts = [c for c in data['courts'] if c.get('available')]
+        
+        for club_data in data:
+            tenant_id = club_data['tenant_id']
+            availability = club_data['data']
+            
+            # Playtomic API usually returns slots or resources
+            # Parse the structure - this may need adjustment based on actual response
+            if isinstance(availability, list):
+                for slot in availability:
+                    if slot.get('available'):
+                        available_courts.append({
+                            'tenant_id': tenant_id,
+                            'court_id': slot.get('resource_id') or slot.get('id'),
+                            'time': slot.get('start_time') or slot.get('time'),
+                            'price': slot.get('price'),
+                            'venue_name': slot.get('venue_name') or 'Unknown Club'
+                        })
         
         # Create unique identifiers for courts
         current_available = set()
         for court in available_courts:
-            # Create a unique ID based on venue, time, and court
-            court_id = f"{court.get('venue_id')}_{court.get('court_id')}_{court.get('time')}"
+            court_id = f"{court['tenant_id']}_{court['court_id']}_{court['time']}"
             current_available.add(court_id)
         
         # Find newly available courts
@@ -142,10 +170,10 @@ class PlaytomicMonitor:
             print(f"Found {len(new_courts)} new available court(s)!")
             # Filter to just the new courts
             new_court_details = [c for c in available_courts 
-                                 if f"{c.get('venue_id')}_{c.get('court_id')}_{c.get('time')}" in new_courts]
+                                 if f"{c['tenant_id']}_{c['court_id']}_{c['time']}" in new_courts]
             
             notification = self.format_notification(new_court_details)
-            self.send_email("New Paddle Courts Available!", notification)
+            self.send_email("🎾 New Padel Courts Available in Mannheim!", notification)
         else:
             print("No new courts available")
         
@@ -177,13 +205,16 @@ class PlaytomicMonitor:
 if __name__ == "__main__":
     # Configuration
     config = {
-        'email_from': 'your_email@gmail.com',
-        'email_password': 'your_app_specific_password',  # Use app-specific password!
-        'email_to': 'recipient@gmail.com',
+        'email_from': 'hansallasse@gmail.com',
+        'email_password': 'isus hgbc dias ldcn',
+        'email_to': 'matteo@kalmund.com',
         'smtp_server': 'smtp.gmail.com',
         'smtp_port': 587,
-        'location': 'Mannheim',  # Your location
+        'location': 'Mannheim',
         'check_interval': 300,  # Check every 5 minutes
+        'tenant_ids': [
+            '5bb4ad71-dbd9-499e-88fb-c9a5e7df6db6',
+        ]
     }
     
     monitor = PlaytomicMonitor(config)
