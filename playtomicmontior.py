@@ -185,7 +185,6 @@ if __name__ == "__main__":
         'tenant_ids': ['5bb4ad71-dbd9-499e-88fb-c9a5e7df6db6'], 
         'check_interval': 300, # 5 Minutes
         
-        # --- NEW SETTINGS ---
         'min_hour': 17, # Only show courts at 17:00 or later
         'ignored_courts': [
             '75318066-28dd-40a1-8936-acb5cb61f652', # Outdoor 1
